@@ -353,7 +353,18 @@ def get_3dpoints_v1(obj_p, img_p, R, T, K):
 
 # 2 对整个点云进行BA优化
 def reproj_err(rotations, motions, K,
-               struct_index, key_points_for_all, structure, distort_coefs=[]):
+               struct_index, key_points_for_all, structure,
+               distort_coefs=[]):
+    """
+    :param rotations:
+    :param motions:
+    :param K:
+    :param struct_index:
+    :param key_points_for_all:
+    :param structure:
+    :param distort_coefs:
+    :return:
+    """
     # 这里需要矩阵
     errors = 0.0
     num = 0
@@ -378,7 +389,7 @@ def reproj_err(rotations, motions, K,
             r_vec, _ = cv2.Rodrigues(r)
 
             # ---------- 3D ——>(重投影) 2D: 这里没有考虑畸变的影响
-            if distort_coefs is []:
+            if distort_coefs == []:
                 pt2d, jacob = cv2.projectPoints(obj_pt, r_vec, t, K, np.array([]))
             else:
                 pt2d, jacob = cv2.projectPoints(obj_pt, r_vec, t, K, distort_coefs)
@@ -738,8 +749,7 @@ def sfm_rec():
 
     # ----- 计算重投影误差: 是否考虑畸变
     reproj_err(rotations, motions, K,
-               correspond_struct_idx, keypoints_for_all, structure,
-               distort_coefs=[])
+               correspond_struct_idx, keypoints_for_all, structure)
 
     ## ----------
     print('BA优化...')
@@ -750,8 +760,7 @@ def sfm_rec():
 
     # ----- 计算重投影误差: 是否考虑畸变
     reproj_err(rotations, motions, K,
-               correspond_struct_idx, keypoints_for_all, structure,
-               distort_coefs=[])
+               correspond_struct_idx, keypoints_for_all, structure)
 
     # 保存Bundle.rd.out
     print("点云已生成，正在保存.out文件")
