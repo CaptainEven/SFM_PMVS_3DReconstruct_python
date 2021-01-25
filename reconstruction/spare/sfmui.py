@@ -366,9 +366,9 @@ def reproj_err(rotations, motions, K,
     :return:
     """
     if distort_coefs == []:
-        print()
+        print('Ignore distortion coefficients.')
     else:
-        print()
+        print('Taking distortion into consideration.')
 
     # 这里需要矩阵
     errors = 0.0
