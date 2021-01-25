@@ -448,7 +448,7 @@ class rec(QtCore.QThread):
 
     def run(self):
         print("===========现在开始稀疏重建===========")
-        sfmui.SFM()
+        sfmui.sfm_rec()
         # time.sleep(2)
         self.signal.emit(True)
 

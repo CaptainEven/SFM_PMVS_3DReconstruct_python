@@ -434,14 +434,16 @@ def func(all_params,
          n_cameras,
          n_points,
          inds_2d_to_3d,
-         key_points_for_all,
+         kts_for_all,
+         K,
          distort_coefs=[]):
     """
     :param all_params:
     :param n_cameras:
     :param n_points:
     :param inds_2d_to_3d:
-    :param key_points_for_all:
+    :param kts_for_all:
+    :param K: camera intrinsics
     :param distort_coefs:
     :return:
     """
@@ -455,13 +457,14 @@ def func(all_params,
     rotations = all_params[:n_cameras * 3].reshape((n_cameras, 3))  # 旋转向量
     motions = all_params[n_cameras * 3: n_cameras * 6].reshape((n_cameras, 3))  # 平移向量
     structure = all_params[n_cameras * 6:n_cameras * 6 + n_points * 3].reshape((n_points, 3))  # 3D点
-    K = all_params[n_cameras * 6 + n_points * 3:].reshape((3, 3))  # camera intrinsics相机内参
+    K_ = all_params[n_cameras * 6 + n_points * 3:].reshape((3, 3))  # 相机内参
+    K = K_
 
     pt3d_cnt = 0
     for view_i in range(len(inds_2d_to_3d)):
         # 获取每张图片特征点、对应的点云索引、旋转向量、平移矩阵
         pt3d_inds = inds_2d_to_3d[view_i]
-        key_points = key_points_for_all[view_i]
+        key_points = kts_for_all[view_i]
         r = rotations[view_i]
         t = motions[view_i]
 
@@ -590,13 +593,14 @@ def BA(pts3d,
     # flatten()分配了新的内存, 但ravel()返回的是一个1维数组的视图
     # all_params = np.hstack((rotate_vecs.ravel(), motions.ravel(), pts3d.ravel()))  # all params need to be optimized
     all_params = np.hstack((rotate_vecs.ravel(), motions.ravel(), pts3d.ravel(), K.ravel()))
-    res_errs = func(all_params, n_cameras, n_points, inds_2d_to_3d, kpts_for_all, distort_coefs)
+    res_errs = func(all_params, n_cameras, n_points, inds_2d_to_3d, kpts_for_all, K, distort_coefs)
 
     # TODO: 这里可以输出原误差
 
     A = bundle_adjustment_sparsity(n_cameras, n_points, camera_inds, pt3d_inds)
 
-    res = least_squares(func, all_params,
+    res = least_squares(func,
+                        all_params,
                         jac_sparsity=A, verbose=2,
                         x_scale='jac', ftol=1e-8, method='trf',
                         args=(n_cameras, n_points, inds_2d_to_3d, kpts_for_all, K))
@@ -704,7 +708,7 @@ def save_sparse():
         f.write(old)
 
 
-def SFM():
+def sfm_rec():
     image_dir = rec_config.image_dir + '/'
     image_names = glob.glob(image_dir + '*.jpg')  # 读取图片本身的名字
     image_names = sorted(image_names)
@@ -723,23 +727,22 @@ def SFM():
     # 加载畸变系数数组
     params_dir = '../calibration/camera_params/' + project_name
     distort_coefs = np.load(params_dir + '/dist.npy')
-    # distort_coefs = []
     print('Distortion coefficients:\n', distort_coefs)
 
     # 提取特征点、特征匹配
     print('提取所有图片特征点...')
-    kpts_for_all, descriptors_for_all, colors_for_all = extract_feathers(image_names)
+    keypoints_for_all, descriptors_for_all, colors_for_all = extract_feathers(image_names)
     # print(colors_for_all)
 
     print('匹配所有图片特征...')
-    matches_for_all = match_all_feather(kpts_for_all, descriptors_for_all)
+    matches_for_all = match_all_feather(keypoints_for_all, descriptors_for_all)
     for i in range(len(matches_for_all)):
         print(len(matches_for_all[i]), end=' ')
 
     # 初始化点云
     print('\n初始化点云...')
     pts3d, inds_2d_to_3d, colors, rotations, motions, projections = init_structure(K,
-                                                                                   kpts_for_all,
+                                                                                   keypoints_for_all,
                                                                                    colors_for_all,
                                                                                    matches_for_all)
     print("初始化点云数目:", len(pts3d))
@@ -752,7 +755,7 @@ def SFM():
         obj_points, img_points = get_objpts_and_imgpts(matches_for_all[i],
                                                        inds_2d_to_3d[i],
                                                        pts3d,
-                                                       kpts_for_all[i + 1])
+                                                       keypoints_for_all[i + 1])
         # solvePnPRansac得到第i+1个相机的旋转和平移
         # 在python的opencv中solvePnPRansac函数的第一个参数长度需要大于7，否则会报错
         # 这里对小于7的点集做一个重复填充操作，
@@ -769,7 +772,7 @@ def SFM():
         motions.append(T)
 
         # 根据R T进行重建
-        p1, p2 = get_matched_points(kpts_for_all[i], kpts_for_all[i + 1], matches_for_all[i])
+        p1, p2 = get_matched_points(keypoints_for_all[i], keypoints_for_all[i + 1], matches_for_all[i])
         c1, c2 = get_matched_colors(colors_for_all[i], colors_for_all[i + 1], matches_for_all[i])
 
         new_structure, new_proj = reconstruction(K, rotations[i], motions[i], R, T, p1, p2)
@@ -779,8 +782,10 @@ def SFM():
         # 点云融合
         pts3d, colors, inds_2d_to_3d[i], inds_2d_to_3d[i + 1] = fusion_structure(
             matches_for_all[i],
-            inds_2d_to_3d[i],
-            inds_2d_to_3d[i + 1],
+            inds_2d_to_3d[
+                i],
+            inds_2d_to_3d[
+                i + 1],
             pts3d,
             new_structure,
             colors, c1)
@@ -790,7 +795,7 @@ def SFM():
 
     ## ---------- BA优化
     print('删除误差较大的点')
-    pts3d = delete_error_point(rotations, motions, K, inds_2d_to_3d, kpts_for_all, pts3d)
+    pts3d = delete_error_point(rotations, motions, K, inds_2d_to_3d, keypoints_for_all, pts3d)
 
     # 由于经过bundle_adjustment的structure，会产生一些空的点（实际代表的意思是已被删除）
     # 修改各图片中关键点的索引
@@ -820,7 +825,7 @@ def SFM():
 
     # ----- 计算重投影误差: 是否考虑畸变
     reproj_err(rotations, motions, K,
-               inds_2d_to_3d, kpts_for_all, pts3d,
+               inds_2d_to_3d, keypoints_for_all, pts3d,
                distort_coefs=distort_coefs)
 
     ## ---------- BA优化
@@ -828,13 +833,13 @@ def SFM():
     motions = np.array(motions)
     rotations = np.array(rotations)
     pts3d_before = pts3d.copy()
-    pts3d, K_ = BA(pts3d, inds_2d_to_3d, motions, rotations, kpts_for_all, K, distort_coefs)
+    pts3d, K_ = BA(pts3d, inds_2d_to_3d, motions, rotations, keypoints_for_all, K, distort_coefs)
     ## ----------
 
     # ----- 计算重投影误差: 是否考虑畸变
-    reproj_err(rotations, motions, K,
-               inds_2d_to_3d, kpts_for_all, pts3d,
-               distort_coefs)
+    reproj_err(rotations, motions, K_,
+               inds_2d_to_3d, keypoints_for_all, pts3d,
+               distort_coefs=distort_coefs)
 
     print(K_ - K)
     print(pts3d - pts3d_before)
@@ -848,7 +853,7 @@ def SFM():
         R, _ = cv2.Rodrigues(rotations[i])
         Rotations[i] = R
 
-    save_bundle_rd_out(pts3d, K, Rotations, motions, colors, inds_2d_to_3d, kpts_for_all)
+    save_bundle_rd_out(pts3d, K, Rotations, motions, colors, inds_2d_to_3d, keypoints_for_all)
 
     np.save(image_dir + 'Structure', pts3d)
     np.save(image_dir + 'Colors', colors)
