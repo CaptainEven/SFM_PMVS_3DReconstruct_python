@@ -858,7 +858,6 @@ def SFM():
     print('Distortion coefficients diff:\n', distort_coefs_ - distort_coefs)
     print('Pts3d diff:\n', pts3d_ - pts3d_before)
 
-
     # 保存Bundle.rd.out
     print("点云已生成，正在保存.out文件")
 
