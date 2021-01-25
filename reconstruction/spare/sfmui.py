@@ -365,6 +365,11 @@ def reproj_err(rotations, motions, K,
     :param distort_coefs:
     :return:
     """
+    if distort_coefs == []:
+        print()
+    else:
+        print()
+
     # 这里需要矩阵
     errors = 0.0
     num = 0
@@ -424,37 +429,67 @@ def delete_error_point(rotations, motions, K, struct_index, key_points_for_all, 
     return structure
 
 
-def fun(param, n_cameras, n_points, struct_index, key_points_for_all, K):
+# 计算残差: 是由观测值减预测值定义的
+def func(all_params,
+         n_cameras,
+         n_points,
+         inds_2d_to_3d,
+         key_points_for_all,
+         K,
+         distort_coefs=[]):
+    """
+    :param all_params:
+    :param n_cameras:
+    :param n_points:
+    :param inds_2d_to_3d:
+    :param key_points_for_all:
+    :param K: camera intrinsics
+    :param distort_coefs:
+    :return:
+    """
     # param: rotations, motions, 以及 points的扁平列表[rotation*3, motion*3, point*3]
     """Compute residuals.
 
-    `params` contains camera parameters and 3-D coordinates.
+    `all_params` contains camera parameters and 3-D coordinates.
     """
-    pro_point = []
-    rotations = param[:n_cameras * 3].reshape((n_cameras, 3))
-    motions = param[n_cameras * 3:n_cameras * 6].reshape((n_cameras, 3))
-    structure = param[n_cameras * 6:].reshape((n_points, 3))
 
-    for i in range(len(struct_index)):
+    errs = []
+    rotations = all_params[:n_cameras * 3].reshape((n_cameras, 3))  # 旋转向量
+    motions = all_params[n_cameras * 3: n_cameras * 6].reshape((n_cameras, 3))  # 平移向量
+    structure = all_params[n_cameras * 6:].reshape((n_points, 3))  # 3D点
+
+    pt3d_cnt = 0
+    for view_i in range(len(inds_2d_to_3d)):
         # 获取每张图片特征点、对应的点云索引、旋转向量、平移矩阵
-        point3d_idxs = struct_index[i]
-        key_points = key_points_for_all[i]
-        r = rotations[i]
-        t = motions[i]
+        pt3d_inds = inds_2d_to_3d[view_i]
+        key_points = key_points_for_all[view_i]
+        r = rotations[view_i]
+        t = motions[view_i]
 
-        for j in range(len(point3d_idxs)):
-            pt3d_idx = int(point3d_idxs[j])
+        for j in range(len(pt3d_inds)):
+            pt3d_idx = int(pt3d_inds[j])
+
             if pt3d_idx < 0:
                 continue
+
+            pt3d_cnt += 1
+
             obj_p = structure[pt3d_idx].reshape(1, 1, 3)
             img_p = key_points[j].pt
-            p, J = cv2.projectPoints(obj_p, r, t, K, np.array([]))
-            p = p.reshape(2)
-            err = img_p - p
-            pro_point.append(err[0])
-            pro_point.append(err[1])
 
-    return np.array(pro_point)
+            ## ---------- 3D ——> 2D: 这里没有考虑畸变因素
+            if distort_coefs == []:
+                p, J = cv2.projectPoints(obj_p, r, t, K, np.array([]))
+            else:
+                p, J = cv2.projectPoints(obj_p, r, t, K, np.array(distort_coefs))
+
+            p = p.reshape(2)
+            err = img_p - p  # 观测 - 预测
+            errs.append(err[0])
+            errs.append(err[1])
+
+    # print("Total {:d} 3D points' re-projection error computed.".format(pt3d_cnt))
+    return np.array(errs)
 
 
 '''
@@ -470,73 +505,97 @@ lil_matrix:基于行连接存储的稀疏矩阵(Row-based linked list sparse mat
 '''
 
 
-def bundle_adjustment_sparsity(n_cameras, n_points, camera_indices, point_indices):
+def bundle_adjustment_sparsity(n_cameras, n_points, camera_inds, pt3d_inds):
+    """
+    :param n_cameras:  number of views
+    :param n_points:   number of 3D points
+    :param camera_inds:    number: 2D-3D mapping pairs (number of 2D feature points: n_observations)
+    :param pt3d_inds:  number: 2D-3D mapping pairs
+    :return:
+    """
     # TODO: 雅可比稀疏矩阵
-    m = camera_indices.size * 2  # n_observation * 2
-    n = n_cameras * 6 + n_points * 3
+
+    m = camera_inds.size * 2  # rows number: n_observations(mappings) * 2(x, y)
+    n = n_cameras * 6 + n_points * 3  # cols number:
     A = lil_matrix((m, n), dtype=int)
 
-    i = np.arange(camera_indices.size)
-    for s in range(6):
-        A[2 * i, camera_indices * 6 + s] = 1
-        A[2 * i + 1, camera_indices * 6 + s] = 1
+    obs_inds = np.arange(camera_inds.size)
+    for i in range(6):
+        A[2 * obs_inds, camera_inds * 6 + i] = 1
+        A[2 * obs_inds + 1, camera_inds * 6 + i] = 1
 
-    for s in range(3):
-        A[2 * i, n_cameras * 6 + point_indices * 3 + s] = 1
-        A[2 * i + 1, n_cameras * 6 + point_indices * 3 + s] = 1
+    for i in range(3):
+        A[2 * obs_inds, n_cameras * 6 + pt3d_inds * 3 + i] = 1
+        A[2 * obs_inds + 1, n_cameras * 6 + pt3d_inds * 3 + i] = 1
 
     return A
 
 
-def read_data(indices):
-    camera_indices = np.array([])
-    point_indices = np.array([])
-
-    for i in range(len(indices)):
-        for j in range(len(indices[i])):
-            if indices[i][j] > -1:
-                camera_indices = np.append(camera_indices, i)
-                point_indices = np.append(point_indices, indices[i][j])
-
-    return camera_indices, point_indices
-
-
-def bundle_adjustment(structure, indexs, motions, rotat, keypoints_for_all, K):
+def read_data(inds_mapping_2d_3d_per_view):
     """
-    :param structure:
-    :param indexs:
-    :param motions:
-    :param rotat:
-    :param keypoints_for_all:
-    :param K:
+    :param inds_mapping_2d_3d_per_view:
     :return:
     """
-    camera_indices, point_indices = read_data(indexs)
+    camera_inds = np.array([])
+    pt3d_inds = np.array([])
+
+    valid_mapping_cnt = 0
+    for view_i in range(len(inds_mapping_2d_3d_per_view)):
+        for pt2d_j in range(len(inds_mapping_2d_3d_per_view[view_i])):
+            if inds_mapping_2d_3d_per_view[view_i][pt2d_j] > -1:  # for validate 2D-3D points
+                valid_mapping_cnt += 1
+
+                camera_inds = np.append(camera_inds, view_i)
+                pt3d_inds = np.append(pt3d_inds, inds_mapping_2d_3d_per_view[view_i][pt2d_j])
+
+    print('Total {:d} valid 2D-3D mappings.'.format(valid_mapping_cnt))
+    return camera_inds, pt3d_inds
+
+
+def BA(pts3d,
+       inds_2d_to_3d,
+       motions, rotate_mats,
+       keypoints_for_all,
+       K,
+       distort_coefs=[]):
+    """
+    :param pts3d:
+    :param inds_2d_to_3d:
+    :param motions:
+    :param rotate_mats:
+    :param keypoints_for_all:
+    :param K:
+    :param distort_coefs:
+    :return:
+    """
+    camera_inds, pt3d_inds = read_data(inds_2d_to_3d)
     n_cameras = len(motions)
-    n_points = len(structure)
+    n_points = len(pts3d)
 
     # 这里需要的是向量
-    rotations = []
-    for i in range(len(rotat)):
-        R, _ = cv2.Rodrigues(rotat[i])  # 旋转矩阵转向量
-        rotations.append(R)
-    rotations = np.array(rotations)
+    rotate_vecs = []
+    for i in range(len(rotate_mats)):
+        R, _ = cv2.Rodrigues(rotate_mats[i])  # 旋转矩阵转向量
+        rotate_vecs.append(R)
+    rotate_vecs = np.array(rotate_vecs)
 
-    x0 = np.hstack((rotations.ravel(), motions.ravel(), structure.ravel()))
-
-    f0 = fun(x0, n_cameras, n_points, indexs, keypoints_for_all, K)
+    # flatten()分配了新的内存, 但ravel()返回的是一个1维数组的视图
+    all_params = np.hstack((rotate_vecs.ravel(), motions.ravel(), pts3d.ravel()))  # all params need to be optimized
+    res_errs = func(all_params, n_cameras, n_points, inds_2d_to_3d, keypoints_for_all, K)
 
     # TODO: 这里可以输出原误差
 
-    A = bundle_adjustment_sparsity(n_cameras, n_points, camera_indices, point_indices)
+    A = bundle_adjustment_sparsity(n_cameras, n_points, camera_inds, pt3d_inds)
 
-    res = least_squares(fun, x0, jac_sparsity=A, verbose=2,
-                        x_scale='jac', ftol=1e-4, method='trf',
-                        args=(n_cameras, n_points, indexs, keypoints_for_all, K))
-    structure = np.array(res.x[n_cameras * 6:]).reshape((-1, 3))
+    res = least_squares(func, all_params,
+                        jac_sparsity=A, verbose=2,
+                        x_scale='jac', ftol=1e-6, method='trf',
+                        args=(n_cameras, n_points, inds_2d_to_3d, keypoints_for_all, K))
+
+    pts3d = np.array(res.x[n_cameras * 6:]).reshape((-1, 3))
 
     # TODO: 这里可以输出现有误差
-    return structure
+    return pts3d
 
 
 def save_bundle_rd_out(structure, K,
@@ -650,7 +709,7 @@ def sfm_rec():
     # TODO: GUI更改文件夹位置2
     # K = np.load('../../calibration/camera_params/' + project_name + '/K.npy')
 
-    # 加载畸变系数
+    # 加载畸变系数数组
     params_dir = '../calibration/camera_params/' + project_name
     distort_coefs = np.load(params_dir + '/dist.npy')
     print('Distortion coefficients:\n', distort_coefs)
@@ -667,11 +726,11 @@ def sfm_rec():
 
     # 初始化点云
     print('\n初始化点云...')
-    structure, correspond_struct_idx, colors, rotations, motions, projections = init_structure(K,
-                                                                                               keypoints_for_all,
-                                                                                               colors_for_all,
-                                                                                               matches_for_all)
-    print("初始化点云数目:", len(structure))
+    pts3d, inds_mapping_2d_3d_per_view, colors, rotations, motions, projections = init_structure(K,
+                                                                                                 keypoints_for_all,
+                                                                                                 colors_for_all,
+                                                                                                 matches_for_all)
+    print("初始化点云数目:", len(pts3d))
 
     # 增量方式添加剩余点云
     print('增量方式添加剩余点云...')
@@ -679,8 +738,8 @@ def sfm_rec():
         # 获取第i幅图中匹配点的空间三维坐标，以及第i+1幅图匹配点的像素坐标
 
         obj_points, img_points = get_objpts_and_imgpts(matches_for_all[i],
-                                                       correspond_struct_idx[i],
-                                                       structure,
+                                                       inds_mapping_2d_3d_per_view[i],
+                                                       pts3d,
                                                        keypoints_for_all[i + 1])
         # solvePnPRansac得到第i+1个相机的旋转和平移
         # 在python的opencv中solvePnPRansac函数的第一个参数长度需要大于7，否则会报错
@@ -706,61 +765,65 @@ def sfm_rec():
         projections.append(new_proj)
 
         # 点云融合
-        structure, colors, correspond_struct_idx[i], correspond_struct_idx[i + 1] = fusion_structure(matches_for_all[i],
-                                                                                                     correspond_struct_idx[
-                                                                                                         i],
-                                                                                                     correspond_struct_idx[
-                                                                                                         i + 1],
-                                                                                                     structure,
-                                                                                                     new_structure,
-                                                                                                     colors, c1)
-        print("新生成点云数", len(new_structure), "第", i, "次融合后点云数", len(structure))
+        pts3d, colors, inds_mapping_2d_3d_per_view[i], inds_mapping_2d_3d_per_view[i + 1] = fusion_structure(
+            matches_for_all[i],
+            inds_mapping_2d_3d_per_view[
+                i],
+            inds_mapping_2d_3d_per_view[
+                i + 1],
+            pts3d,
+            new_structure,
+            colors, c1)
+        print("新生成点云数", len(new_structure), "第", i, "次融合后点云数", len(pts3d))
 
-    print(len(structure))
+    print(len(pts3d))
 
-    # BA优化
+    ## ---------- BA优化
     print('删除误差较大的点')
-    structure = delete_error_point(rotations, motions, K, correspond_struct_idx, keypoints_for_all, structure)
+    pts3d = delete_error_point(rotations, motions, K, inds_mapping_2d_3d_per_view, keypoints_for_all, pts3d)
 
     # 由于经过bundle_adjustment的structure，会产生一些空的点（实际代表的意思是已被删除）
     # 修改各图片中关键点的索引
     # 修改点云中的None为 -1
-    for i in range(len(structure)):
-        if math.isnan(structure[i][0]):
-            structure[i] = -1
+    for i in range(len(pts3d)):
+        if math.isnan(pts3d[i][0]):
+            pts3d[i] = -1
 
     # 修改各图片中的索引
-    for a in range(len(correspond_struct_idx)):
-        for b in range(len(correspond_struct_idx[a])):
-            if correspond_struct_idx[a][b] != -1:
-                if structure[int(correspond_struct_idx[a][b])][0] == -1:
-                    correspond_struct_idx[a][b] = -1
+    for view_i in range(len(inds_mapping_2d_3d_per_view)):
+        for pt2d_j in range(len(inds_mapping_2d_3d_per_view[view_i])):
+            if inds_mapping_2d_3d_per_view[view_i][pt2d_j] != -1:
+                if pts3d[int(inds_mapping_2d_3d_per_view[view_i][pt2d_j])][0] == -1:
+                    inds_mapping_2d_3d_per_view[view_i][pt2d_j] = -1
                 else:
-                    correspond_struct_idx[a][b] -= (np.sum(structure[:int(correspond_struct_idx[a][b])] == -1) / 3)
+                    inds_mapping_2d_3d_per_view[view_i][pt2d_j] -= (
+                            np.sum(pts3d[:int(inds_mapping_2d_3d_per_view[view_i][pt2d_j])] == -1) / 3)
 
     # 删除那些为空的点
     i = 0
-    while i < len(structure):
-        if structure[i][0] == -1:
-            structure = np.delete(structure, i, 0)
+    while i < len(pts3d):
+        if pts3d[i][0] == -1:
+            pts3d = np.delete(pts3d, i, 0)
             colors = np.delete(colors, i, 0)
             i -= 1
         i += 1
 
     # ----- 计算重投影误差: 是否考虑畸变
     reproj_err(rotations, motions, K,
-               correspond_struct_idx, keypoints_for_all, structure)
+               inds_mapping_2d_3d_per_view, keypoints_for_all, pts3d,
+               distort_coefs=distort_coefs)
 
-    ## ----------
+    ## ---------- BA优化
     print('BA优化...')
     motions = np.array(motions)
     rotations = np.array(rotations)
-    structure = bundle_adjustment(structure, correspond_struct_idx, motions, rotations, keypoints_for_all, K)
+    pts3d = BA(pts3d, inds_mapping_2d_3d_per_view, motions, rotations, keypoints_for_all, K)
     ## ----------
 
     # ----- 计算重投影误差: 是否考虑畸变
     reproj_err(rotations, motions, K,
-               correspond_struct_idx, keypoints_for_all, structure)
+               inds_mapping_2d_3d_per_view, keypoints_for_all, pts3d,
+               distort_coefs=distort_coefs)
 
     # 保存Bundle.rd.out
     print("点云已生成，正在保存.out文件")
@@ -771,9 +834,9 @@ def sfm_rec():
         R, _ = cv2.Rodrigues(rotations[i])
         Rotations[i] = R
 
-    save_bundle_rd_out(structure, K, Rotations, motions, colors, correspond_struct_idx, keypoints_for_all)
+    save_bundle_rd_out(pts3d, K, Rotations, motions, colors, inds_mapping_2d_3d_per_view, keypoints_for_all)
 
-    np.save(image_dir + 'Structure', structure)
+    np.save(image_dir + 'Structure', pts3d)
     np.save(image_dir + 'Colors', colors)
     np.save(image_dir + 'Projections', projections)
     # np.save(image_dir + 'Rotations', rotations)
