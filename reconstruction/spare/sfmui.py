@@ -432,16 +432,16 @@ def delete_error_point(rotations, motions, K, struct_index, key_points_for_all, 
 # 计算残差: 是由观测值减预测值定义的
 # Function which computes the vector of residuals
 def func(all_params,
-         n_cameras,
-         n_points,
+         n_cams,
+         n_pts,
          inds_2d_to_3d,
          kts_for_all,
          K,
          distort_coefs=[]):
     """
     :param all_params:
-    :param n_cameras:
-    :param n_points:
+    :param n_cams:
+    :param n_pts:
     :param inds_2d_to_3d:
     :param kts_for_all:
     :param K: camera intrinsics
@@ -455,16 +455,16 @@ def func(all_params,
     """
 
     errs = []
-    rotations = all_params[:n_cameras * 3].reshape((n_cameras, 3))  # 旋转向量
-    motions = all_params[n_cameras * 3: n_cameras * 6].reshape((n_cameras, 3))  # 平移向量
-    pts3d = all_params[n_cameras * 6:n_cameras * 6 + n_points * 3].reshape((n_points, 3))  # 3D点
+    rotations = all_params[:n_cams * 3].reshape((n_cams, 3))  # 旋转向量
+    motions = all_params[n_cams * 3: n_cams * 6].reshape((n_cams, 3))  # 平移向量
+    pts3d = all_params[n_cams * 6:n_cams * 6 + n_pts * 3].reshape((n_pts, 3))  # 3D点
 
     # 相机内参
-    K_ = all_params[n_cameras * 6 + n_points * 3:n_cameras * 6 + n_points * 3 + 9].reshape((3, 3))
+    K_ = all_params[n_cams * 6 + n_pts * 3:n_cams * 6 + n_pts * 3 + 9].reshape((3, 3))
     K = K_
 
     # 畸变系数
-    distort_coefs_ = all_params[n_cameras * 6 + n_points * 3 + 9:].reshape((1, 5))
+    distort_coefs_ = all_params[n_cams * 6 + n_pts * 3 + 9:n_cams * 6 + n_pts * 3 + 14].reshape((1, 5))
     distort_coefs = distort_coefs_
 
     pt3d_cnt = 0
