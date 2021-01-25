@@ -366,9 +366,9 @@ def reproj_err(rotations, motions, K,
     :return:
     """
     if distort_coefs == []:
-        print('Ignore distortion coefficients.')
+        print('\nIgnore distortion coefficients.')
     else:
-        print('Taking distortion into consideration.')
+        print('\nTaking distortion into consideration.')
 
     # 这里需要矩阵
     errors = 0.0
@@ -435,7 +435,6 @@ def func(all_params,
          n_points,
          inds_2d_to_3d,
          key_points_for_all,
-         K,
          distort_coefs=[]):
     """
     :param all_params:
@@ -443,7 +442,6 @@ def func(all_params,
     :param n_points:
     :param inds_2d_to_3d:
     :param key_points_for_all:
-    :param K: camera intrinsics
     :param distort_coefs:
     :return:
     """
@@ -456,7 +454,8 @@ def func(all_params,
     errs = []
     rotations = all_params[:n_cameras * 3].reshape((n_cameras, 3))  # 旋转向量
     motions = all_params[n_cameras * 3: n_cameras * 6].reshape((n_cameras, 3))  # 平移向量
-    structure = all_params[n_cameras * 6:].reshape((n_points, 3))  # 3D点
+    structure = all_params[n_cameras * 6:n_cameras * 6 + n_points * 3].reshape((n_points, 3))  # 3D点
+    K = all_params[n_cameras * 6 + n_points * 3:].reshape((3, 3))  # camera intrinsics相机内参
 
     pt3d_cnt = 0
     for view_i in range(len(inds_2d_to_3d)):
@@ -516,17 +515,21 @@ def bundle_adjustment_sparsity(n_cameras, n_points, camera_inds, pt3d_inds):
     # TODO: 雅可比稀疏矩阵
 
     m = camera_inds.size * 2  # rows number: n_observations(mappings) * 2(x, y)
-    n = n_cameras * 6 + n_points * 3  # cols number:
+    n = n_cameras * 6 + n_points * 3 + 9  # cols number:
     A = lil_matrix((m, n), dtype=int)
 
     obs_inds = np.arange(camera_inds.size)
-    for i in range(6):
+    for i in range(6):  # camera pose: rotations and translations
         A[2 * obs_inds, camera_inds * 6 + i] = 1
         A[2 * obs_inds + 1, camera_inds * 6 + i] = 1
 
-    for i in range(3):
+    for i in range(3):  # 3D points
         A[2 * obs_inds, n_cameras * 6 + pt3d_inds * 3 + i] = 1
         A[2 * obs_inds + 1, n_cameras * 6 + pt3d_inds * 3 + i] = 1
+
+    for i in range(9):  # camera intrinsics
+        A[2 * obs_inds, n_cameras * 6 + n_points * 3 + i] = 1
+        A[2 * obs_inds + 1, n_cameras * 6 + n_points * 3 + i] = 1
 
     return A
 
@@ -555,7 +558,7 @@ def read_data(inds_mapping_2d_3d_per_view):
 def BA(pts3d,
        inds_2d_to_3d,
        motions, rotate_mats,
-       keypoints_for_all,
+       kpts_for_all,
        K,
        distort_coefs=[]):
     """
@@ -563,11 +566,16 @@ def BA(pts3d,
     :param inds_2d_to_3d:
     :param motions:
     :param rotate_mats:
-    :param keypoints_for_all:
+    :param kpts_for_all:
     :param K:
     :param distort_coefs:
     :return:
     """
+    if distort_coefs == []:
+        print('\nIgnore distortion coefficients.')
+    else:
+        print('\nTaking distortion into consideration.')
+
     camera_inds, pt3d_inds = read_data(inds_2d_to_3d)
     n_cameras = len(motions)
     n_points = len(pts3d)
@@ -580,8 +588,9 @@ def BA(pts3d,
     rotate_vecs = np.array(rotate_vecs)
 
     # flatten()分配了新的内存, 但ravel()返回的是一个1维数组的视图
-    all_params = np.hstack((rotate_vecs.ravel(), motions.ravel(), pts3d.ravel()))  # all params need to be optimized
-    res_errs = func(all_params, n_cameras, n_points, inds_2d_to_3d, keypoints_for_all, K)
+    # all_params = np.hstack((rotate_vecs.ravel(), motions.ravel(), pts3d.ravel()))  # all params need to be optimized
+    all_params = np.hstack((rotate_vecs.ravel(), motions.ravel(), pts3d.ravel(), K.ravel()))
+    res_errs = func(all_params, n_cameras, n_points, inds_2d_to_3d, kpts_for_all, distort_coefs)
 
     # TODO: 这里可以输出原误差
 
@@ -589,13 +598,15 @@ def BA(pts3d,
 
     res = least_squares(func, all_params,
                         jac_sparsity=A, verbose=2,
-                        x_scale='jac', ftol=1e-6, method='trf',
-                        args=(n_cameras, n_points, inds_2d_to_3d, keypoints_for_all, K))
+                        x_scale='jac', ftol=1e-8, method='trf',
+                        args=(n_cameras, n_points, inds_2d_to_3d, kpts_for_all, K))
 
-    pts3d = np.array(res.x[n_cameras * 6:]).reshape((-1, 3))
+    pts3d = np.array(res.x[n_cameras * 6:n_cameras * 6 + n_points * 3]).reshape((-1, 3))
+    K_refined = np.array(res.x[n_cameras * 6 + n_points * 3:]).reshape((3, 3))
+    print('K refined:\n', K_refined)
 
     # TODO: 这里可以输出现有误差
-    return pts3d
+    return pts3d, K_refined
 
 
 def save_bundle_rd_out(structure, K,
@@ -693,7 +704,7 @@ def save_sparse():
         f.write(old)
 
 
-def sfm_rec():
+def SFM():
     image_dir = rec_config.image_dir + '/'
     image_names = glob.glob(image_dir + '*.jpg')  # 读取图片本身的名字
     image_names = sorted(image_names)
@@ -712,24 +723,25 @@ def sfm_rec():
     # 加载畸变系数数组
     params_dir = '../calibration/camera_params/' + project_name
     distort_coefs = np.load(params_dir + '/dist.npy')
+    # distort_coefs = []
     print('Distortion coefficients:\n', distort_coefs)
 
     # 提取特征点、特征匹配
     print('提取所有图片特征点...')
-    keypoints_for_all, descriptors_for_all, colors_for_all = extract_feathers(image_names)
+    kpts_for_all, descriptors_for_all, colors_for_all = extract_feathers(image_names)
     # print(colors_for_all)
 
     print('匹配所有图片特征...')
-    matches_for_all = match_all_feather(keypoints_for_all, descriptors_for_all)
+    matches_for_all = match_all_feather(kpts_for_all, descriptors_for_all)
     for i in range(len(matches_for_all)):
         print(len(matches_for_all[i]), end=' ')
 
     # 初始化点云
     print('\n初始化点云...')
-    pts3d, inds_mapping_2d_3d_per_view, colors, rotations, motions, projections = init_structure(K,
-                                                                                                 keypoints_for_all,
-                                                                                                 colors_for_all,
-                                                                                                 matches_for_all)
+    pts3d, inds_2d_to_3d, colors, rotations, motions, projections = init_structure(K,
+                                                                                   kpts_for_all,
+                                                                                   colors_for_all,
+                                                                                   matches_for_all)
     print("初始化点云数目:", len(pts3d))
 
     # 增量方式添加剩余点云
@@ -738,9 +750,9 @@ def sfm_rec():
         # 获取第i幅图中匹配点的空间三维坐标，以及第i+1幅图匹配点的像素坐标
 
         obj_points, img_points = get_objpts_and_imgpts(matches_for_all[i],
-                                                       inds_mapping_2d_3d_per_view[i],
+                                                       inds_2d_to_3d[i],
                                                        pts3d,
-                                                       keypoints_for_all[i + 1])
+                                                       kpts_for_all[i + 1])
         # solvePnPRansac得到第i+1个相机的旋转和平移
         # 在python的opencv中solvePnPRansac函数的第一个参数长度需要大于7，否则会报错
         # 这里对小于7的点集做一个重复填充操作，
@@ -757,7 +769,7 @@ def sfm_rec():
         motions.append(T)
 
         # 根据R T进行重建
-        p1, p2 = get_matched_points(keypoints_for_all[i], keypoints_for_all[i + 1], matches_for_all[i])
+        p1, p2 = get_matched_points(kpts_for_all[i], kpts_for_all[i + 1], matches_for_all[i])
         c1, c2 = get_matched_colors(colors_for_all[i], colors_for_all[i + 1], matches_for_all[i])
 
         new_structure, new_proj = reconstruction(K, rotations[i], motions[i], R, T, p1, p2)
@@ -765,12 +777,10 @@ def sfm_rec():
         projections.append(new_proj)
 
         # 点云融合
-        pts3d, colors, inds_mapping_2d_3d_per_view[i], inds_mapping_2d_3d_per_view[i + 1] = fusion_structure(
+        pts3d, colors, inds_2d_to_3d[i], inds_2d_to_3d[i + 1] = fusion_structure(
             matches_for_all[i],
-            inds_mapping_2d_3d_per_view[
-                i],
-            inds_mapping_2d_3d_per_view[
-                i + 1],
+            inds_2d_to_3d[i],
+            inds_2d_to_3d[i + 1],
             pts3d,
             new_structure,
             colors, c1)
@@ -780,7 +790,7 @@ def sfm_rec():
 
     ## ---------- BA优化
     print('删除误差较大的点')
-    pts3d = delete_error_point(rotations, motions, K, inds_mapping_2d_3d_per_view, keypoints_for_all, pts3d)
+    pts3d = delete_error_point(rotations, motions, K, inds_2d_to_3d, kpts_for_all, pts3d)
 
     # 由于经过bundle_adjustment的structure，会产生一些空的点（实际代表的意思是已被删除）
     # 修改各图片中关键点的索引
@@ -790,14 +800,14 @@ def sfm_rec():
             pts3d[i] = -1
 
     # 修改各图片中的索引
-    for view_i in range(len(inds_mapping_2d_3d_per_view)):
-        for pt2d_j in range(len(inds_mapping_2d_3d_per_view[view_i])):
-            if inds_mapping_2d_3d_per_view[view_i][pt2d_j] != -1:
-                if pts3d[int(inds_mapping_2d_3d_per_view[view_i][pt2d_j])][0] == -1:
-                    inds_mapping_2d_3d_per_view[view_i][pt2d_j] = -1
+    for view_i in range(len(inds_2d_to_3d)):
+        for pt2d_j in range(len(inds_2d_to_3d[view_i])):
+            if inds_2d_to_3d[view_i][pt2d_j] != -1:
+                if pts3d[int(inds_2d_to_3d[view_i][pt2d_j])][0] == -1:
+                    inds_2d_to_3d[view_i][pt2d_j] = -1
                 else:
-                    inds_mapping_2d_3d_per_view[view_i][pt2d_j] -= (
-                            np.sum(pts3d[:int(inds_mapping_2d_3d_per_view[view_i][pt2d_j])] == -1) / 3)
+                    inds_2d_to_3d[view_i][pt2d_j] -= (
+                            np.sum(pts3d[:int(inds_2d_to_3d[view_i][pt2d_j])] == -1) / 3)
 
     # 删除那些为空的点
     i = 0
@@ -810,20 +820,24 @@ def sfm_rec():
 
     # ----- 计算重投影误差: 是否考虑畸变
     reproj_err(rotations, motions, K,
-               inds_mapping_2d_3d_per_view, keypoints_for_all, pts3d,
+               inds_2d_to_3d, kpts_for_all, pts3d,
                distort_coefs=distort_coefs)
 
     ## ---------- BA优化
-    print('BA优化...')
+    print('\nBA优化...')
     motions = np.array(motions)
     rotations = np.array(rotations)
-    pts3d = BA(pts3d, inds_mapping_2d_3d_per_view, motions, rotations, keypoints_for_all, K)
+    pts3d_before = pts3d.copy()
+    pts3d, K_ = BA(pts3d, inds_2d_to_3d, motions, rotations, kpts_for_all, K, distort_coefs)
     ## ----------
 
     # ----- 计算重投影误差: 是否考虑畸变
     reproj_err(rotations, motions, K,
-               inds_mapping_2d_3d_per_view, keypoints_for_all, pts3d,
-               distort_coefs=distort_coefs)
+               inds_2d_to_3d, kpts_for_all, pts3d,
+               distort_coefs)
+
+    print(K_ - K)
+    print(pts3d - pts3d_before)
 
     # 保存Bundle.rd.out
     print("点云已生成，正在保存.out文件")
@@ -834,7 +848,7 @@ def sfm_rec():
         R, _ = cv2.Rodrigues(rotations[i])
         Rotations[i] = R
 
-    save_bundle_rd_out(pts3d, K, Rotations, motions, colors, inds_mapping_2d_3d_per_view, keypoints_for_all)
+    save_bundle_rd_out(pts3d, K, Rotations, motions, colors, inds_2d_to_3d, kpts_for_all)
 
     np.save(image_dir + 'Structure', pts3d)
     np.save(image_dir + 'Colors', colors)
