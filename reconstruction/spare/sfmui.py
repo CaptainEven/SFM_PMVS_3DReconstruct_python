@@ -604,11 +604,11 @@ def BA(pts3d,
     # flatten()分配了新的内存, 但ravel()返回的是一个1维数组的视图
     # all_params = np.hstack((rotate_vecs.ravel(), motions.ravel(), pts3d.ravel()))  # all params need to be optimized
     all_params = np.hstack((rotate_vecs.ravel(), motions.ravel(), pts3d.ravel(), K.ravel(), distort_coefs.ravel()))
+
+    # ----------
     residual_errs = func(all_params, n_cams, n_pts, inds_2d_to_3d, kpts_for_all, K, distort_coefs)
-
-    # TODO: 这里可以输出原误差
-
     A = bundle_adjustment_sparsity(n_cams, n_pts, camera_inds, pt3d_inds)
+    # ----------
 
     res = least_squares(func,
                         all_params,
