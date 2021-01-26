@@ -486,10 +486,10 @@ def func(all_params,
             obj_p = pts3d[pt3d_idx].reshape(1, 1, 3)
             img_p = key_points[j].pt
 
-            ## ---------- 3D ——> 2D: 这里没有考虑畸变因素
-            if distort_coefs == []:
+            ## ---------- 3D ——> 2D
+            if distort_coefs == []:  # 这里没有考虑畸变因素
                 est_p, J = cv2.projectPoints(obj_p, r, t, K_, np.array([]))
-            else:
+            else:  # 考虑畸变的影响
                 est_p, J = cv2.projectPoints(obj_p, r, t, K_, np.array(distort_coefs_))
 
             est_p = est_p.reshape(2)
@@ -608,14 +608,15 @@ def BA(pts3d,
     # ----------
     residual_errs = func(all_params, n_cams, n_pts, inds_2d_to_3d, kpts_for_all, K, distort_coefs)
     A = bundle_adjustment_sparsity(n_cams, n_pts, camera_inds, pt3d_inds)
-    # ----------
-
     res = least_squares(func,
                         all_params,
                         jac_sparsity=A, verbose=2,
                         x_scale='jac', ftol=1e-8, method='trf',
-                        args=(n_cams, n_pts, inds_2d_to_3d, kpts_for_all, K))
+                        args=(n_cams, n_pts, inds_2d_to_3d, kpts_for_all, K, distort_coefs))
 
+    # ----------
+
+    # ---------- output
     pts3d = np.array(res.x[n_cams * 6:n_cams * 6 + n_pts * 3]).reshape((-1, 3))
     K_refined = np.array(res.x[n_cams * 6 + n_pts * 3:n_cams * 6 + n_pts * 3 + 9]).reshape((3, 3))
     dist_coefs_refined = np.array(res.x[n_cams * 6 + n_pts * 3 + 9:n_cams * 6 + n_pts * 3 + 14]).reshape((1, 5))
