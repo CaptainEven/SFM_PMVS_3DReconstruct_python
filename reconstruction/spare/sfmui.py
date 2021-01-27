@@ -493,7 +493,10 @@ def func(all_params,
                 est_p, J = cv2.projectPoints(obj_p, r, t, K_, np.array(distort_coefs_))
 
             est_p = est_p.reshape(2)
-            err = img_p - est_p  # 观测 - 预测
+
+            # 观测 - 预测
+            err = img_p - est_p
+
             errs.append(err[0])
             errs.append(err[1])
 
