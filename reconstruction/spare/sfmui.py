@@ -572,14 +572,14 @@ def read_data(inds_mapping_2d_3d_per_view):
     return camera_inds, pt3d_inds
 
 
-def BA(pts3d_new,
+def BA(pts3d,
        inds_2d_to_3d,
        mot_vects, rotate_mats,
        kpts_for_all,
        K,
        distort_coefs=[]):
     """
-    :param pts3d_new:
+    :param pts3d:
     :param inds_2d_to_3d:
     :param mot_vects:
     :param rotate_mats:
@@ -595,7 +595,7 @@ def BA(pts3d_new,
 
     camera_inds, pt3d_inds = read_data(inds_2d_to_3d)
     n_cams = len(mot_vects)
-    n_pts = len(pts3d_new)
+    n_pts = len(pts3d)
 
     # 这里需要的是向量
     rot_vecs = []
@@ -604,25 +604,25 @@ def BA(pts3d_new,
         rot_vecs.append(R)
     rot_vecs = np.array(rot_vecs)
 
+    # ----------
     # flatten()分配了新的内存, 但ravel()返回的是一个1维数组的视图
     # all_params = np.hstack((rot_vecs.ravel(), mot_vects.ravel(), pts3d.ravel()))  # all params need to be optimized
-    all_params = np.hstack((rot_vecs.ravel(), mot_vects.ravel(), pts3d_new.ravel(), K.ravel(), distort_coefs.ravel()))
+    all_params = np.hstack((rot_vecs.ravel(), mot_vects.ravel(), pts3d.ravel(), K.ravel(), distort_coefs.ravel()))
 
-    # ----------
     residual_errs = func(all_params, n_cams, n_pts, inds_2d_to_3d, kpts_for_all, K, distort_coefs)
     A = bundle_adjustment_sparsity(n_cams, n_pts, camera_inds, pt3d_inds)
     res = least_squares(func,
                         all_params,
                         jac_sparsity=A,  # A
                         verbose=2,
-                        x_scale='jac', ftol=1e-8, xtol=1e-8, method='trf', loss='linear',
+                        x_scale='jac', method='trf', loss='linear',
                         args=(n_cams, n_pts, inds_2d_to_3d, kpts_for_all, K, distort_coefs))
 
     # ----------
 
     # ---------- output
     new_x = res.x
-    pts3d_new = np.array(new_x[n_cams * 6:n_cams * 6 + n_pts * 3]).reshape((-1, 3))
+    pts3d = np.array(new_x[n_cams * 6:n_cams * 6 + n_pts * 3]).reshape((-1, 3))
     K_new = np.array(new_x[n_cams * 6 + n_pts * 3:n_cams * 6 + n_pts * 3 + 9]).reshape((3, 3))
     dist_coefs_new = np.array(new_x[n_cams * 6 + n_pts * 3 + 9:n_cams * 6 + n_pts * 3 + 14]).reshape((1, 5))
     poses_new = new_x[: n_cams * 6]
@@ -631,7 +631,7 @@ def BA(pts3d_new,
     print('Distortion coefficients refined:\n', dist_coefs_new)
 
     # TODO: 这里可以输出现有误差
-    return pts3d_new, poses_new, K_new, dist_coefs_new
+    return pts3d, poses_new, K_new, dist_coefs_new
 
 
 def save_bundle_rd_out(structure, K,
@@ -793,7 +793,7 @@ def SFM():
         rots.append(R)  # 存入旋转矩阵list
         mots.append(T)
 
-        # 根据R T进行重建
+        # 根据[R|T]进行重建
         p1, p2 = get_matched_points(kts_all[i], kts_all[i + 1], matches_for_all[i])
         c1, c2 = get_matched_colors(colors_for_all[i], colors_for_all[i + 1], matches_for_all[i])
 
@@ -900,6 +900,7 @@ def SFM():
     np.save(image_dir + 'Structure', pts3d)
     np.save(image_dir + 'Colors', colors)
     np.save(image_dir + 'Projections', projections)
+
     # np.save(image_dir + 'Rotations', rotations)
     # np.save(image_dir + 'Motions', motions)
     # np.save(image_dir + 'Indexs', correspond_struct_idx)

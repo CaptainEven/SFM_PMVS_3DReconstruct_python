@@ -247,7 +247,7 @@ class MainWin(QDialog, Ui_Dialog):
         self.show_final_btn = QtWidgets.QPushButton(self)
         self.show_final_btn.setGeometry(QtCore.QRect(370, 380, 240, 41))
         self.show_final_btn.setObjectName("showfinalbtn")
-        self.show_final_btn.setText("点击显示足部重建结果")
+        self.show_final_btn.setText("点击显示逐步重建结果")
         font = QtGui.QFont()
         font.setFamily("幼圆")
         font.setPointSize(10)
