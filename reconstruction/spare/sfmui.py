@@ -114,18 +114,7 @@ def match_feathers(kp1, kp2, des1, des2):
         # 将mask变成一维数组
         mask = mask.ravel().tolist()
 
-        # i = 0
-        # j = 0
-        # while (j < len(mask)):
-        #     if mask[j] == 0:
-        #         valid_matches.remove(valid_matches[i])
-        #         j += 1
-        #     else:
-        #         i += 1
-        #         j += 1
-
-        ## ----- mask out invalid match
-
+        # ----- mask out invalid match
         good_matches = [match for i, match in enumerate(valid_matches) if mask[i]]
 
     else:
