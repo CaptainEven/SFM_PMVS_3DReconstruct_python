@@ -111,10 +111,8 @@ def match_feathers(kp1, kp2, des1, des2):
         # M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 100.0)
         M, mask = cv2.findFundamentalMat(src_pts, dst_pts, cv2.RANSAC)  # 到底是单应矩阵还是基础矩阵?
 
-        # 将mask变成一维数组
-        mask = mask.ravel().tolist()
-
         # ----- mask out invalid match
+        mask = mask.ravel().tolist()  # 将mask变成一维数组
         good_matches = [match for i, match in enumerate(valid_matches) if mask[i]]
 
     else:
