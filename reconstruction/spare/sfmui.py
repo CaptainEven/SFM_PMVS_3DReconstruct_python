@@ -49,6 +49,13 @@ def extract_feathers(image_names):
 
 # 特征点匹配
 def match_feathers(kp1, kp2, des1, des2):
+    """
+    :param kp1:
+    :param kp2:
+    :param des1:
+    :param des2:
+    :return:
+    """
     # 用FLANNE算法对两张照片进行关键点匹配，返回这两张照片的匹配对
     # FLANN参数设计
     # FLANN_INDEX_KDTREE = 0
@@ -60,55 +67,99 @@ def match_feathers(kp1, kp2, des1, des2):
     # matches = flann.knnMatch(des1, des2, k=2)  # 匹配描述子 返回匹配的两点
     bf = cv2.BFMatcher(cv2.NORM_HAMMING2)  # NORM_HAMMING, NORM_HAMMING2,  NORM_L2
     matches = bf.knnMatch(des1, des2, k=2)
+    matches_rcp = bf.knnMatch(des2, des1, k=2)
 
-    # 设置两距离比值小于0.7时为可用匹配  （Lowe's ratio test）
-    good = []
-    for m, n in matches:
-        if m.distance < 0.7 * n.distance:
-            good.append(m)
+    # 比例滤波器
+    def ratio_test(matches):
+        """
+        :param matches:
+        :return:
+        """
+        valid_matches = []
+        for first, second in matches:  # top1 and top2
+            if first.distance < 0.7 * second.distance:
+                valid_matches.append(first)
+        return  valid_matches
 
-    if len(good) >= 10:
+    # ----- 应用比例测试滤波: 设置两距离比值小于0.7时为可用匹配(Lowe's ratio test)
+    # ----- Ratio test filter: 设置两距离比值小于0.7时为可用匹配(Lowe's ratio test)
+    valid_matches = ratio_test(matches)
+    valid_matches_rcp = ratio_test(matches_rcp)
+
+    # # ----- 应用互惠滤波器滤波: Reciprocity filter
+    # matches_rcp_filter = []
+    # for match_rcp in valid_matches_rcp:
+    #     found = False
+    #     for match in valid_matches:
+    #         if match_rcp.queryIdx == match.trainIdx \
+    #                 and match_rcp.trainIdx == match.queryIdx:
+    #             matches_rcp_filter.append(match)  # 收集满足互惠滤波的pipei
+    #             found = True
+    #             break
+    #     if found:
+    #         continue
+    # valid_matches = matches_rcp_filter
+
+    # ----- 应用对极几何约束滤波: Epipolar constraint filter
+    good_matches = []
+    if len(valid_matches) >= 10:
         # 获取匹配出来的点
-        src_pts = np.float32([kp1[m.queryIdx].pt for m in good])
-        dst_pts = np.float32([kp2[m.trainIdx].pt for m in good])
+        src_pts = np.float32([kp1[m.queryIdx].pt for m in valid_matches])
+        dst_pts = np.float32([kp2[m.trainIdx].pt for m in valid_matches])
 
         # RANSAC随机采样一致
-        M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 100.0)
+        # M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 100.0)
+        M, mask = cv2.findFundamentalMat(src_pts, dst_pts, cv2.RANSAC)  # 到底是单应矩阵还是基础矩阵?
 
         # 将mask变成一维数组
         mask = mask.ravel().tolist()
 
-        i = 0
-        j = 0
-        while (j < len(mask)):
-            if mask[j] == 0:
-                good.remove(good[i])
-                j += 1
-            else:
-                i += 1
-                j += 1
+        # i = 0
+        # j = 0
+        # while (j < len(mask)):
+        #     if mask[j] == 0:
+        #         valid_matches.remove(valid_matches[i])
+        #         j += 1
+        #     else:
+        #         i += 1
+        #         j += 1
+
+        ## ----- mask out invalid match
+
+        good_matches = [match for i, match in enumerate(valid_matches) if mask[i]]
 
     else:
         print("not have enough matches!")
 
-    return np.array(good)
+    return np.array(good_matches)
 
 
 # 对相邻图片特征匹配
-def match_all_feather(keypoints_for_all, descriptors_for_all):
+def match_all_feather(kpts_for_all, despts_for_all):
+    """
+    :param kpts_for_all:
+    :param despts_for_all:
+    :return:
+    """
     # 只需相邻图片进行匹配 1-2 2-3 ...N-1 - N 一共N-1对匹配
     matches_for_all = []
-    for i in tqdm(range(len(descriptors_for_all) - 1)):
-        matches = match_feathers(keypoints_for_all[i], keypoints_for_all[i + 1], descriptors_for_all[i],
-                                 descriptors_for_all[i + 1])
+    for i in tqdm(range(len(despts_for_all) - 1)):
+        matches = match_feathers(kpts_for_all[i], kpts_for_all[i + 1],
+                                 despts_for_all[i], despts_for_all[i + 1])
         matches_for_all.append(matches)
 
     return np.array(matches_for_all)
 
 
 # ============Part 2==========
-# 计算本质矩阵和外参
+# 计算本征矩阵E和外参[R|T]
 def find_transform(K, p1, p2):
+    """
+    :param K:
+    :param p1:
+    :param p2:
+    :return:
+    """
     # 根据匹配点求本征矩阵，使用RANSAC进一步消除失配点
     # 基于五点算法 mask用来标记RANSAC计算得来的内点 只有内点才被用于后续步骤
     E, mask = cv2.findEssentialMat(p1, p2, K, cv2.RANSAC, 0.999, 1.0)
@@ -345,7 +396,7 @@ def get_3dpoints_v1(obj_p, img_p, R, T, K):
     p, J = cv2.projectPoints(obj_p.reshape(1, 1, 3), R, T, K, np.array([]))
     p = p.reshape(2)
     e = img_p - p  # 计算误差
-    if e[0] > 1.0 or e[1] > 1.0:  # 误差太大则不要这个点
+    if abs(e[0]) > 1.0 or abs(e[1]) > 1.0:  # 误差太大则不要这个点
         return None
 
     return obj_p  # 只返回误差满足要求的点
@@ -402,7 +453,7 @@ def reproj_err(rotations, motions, K,
             e = img_pt - pt2d  # 计算误差
             # dist = math.sqrt((img_pt[0] - pt2d[0]) * (img_pt[0] - pt2d[0])
             #                + (img_pt[1] - pt2d[1]) * (img_pt[1] - pt2d[1]))
-            error = (e[0] + e[1]) * 0.5  # x,y 误差均值
+            error = (abs(e[0]) + abs(e[1])) * 0.5  # x,y 误差均值
             errors += error
 
     avg_error = errors / num
@@ -410,17 +461,26 @@ def reproj_err(rotations, motions, K,
 
 
 def delete_error_point(rotations, motions, K, struct_index, key_points_for_all, structure):
+    """
+    :param rotations:
+    :param motions:
+    :param K:
+    :param struct_index:
+    :param key_points_for_all:
+    :param structure:
+    :return:
+    """
     # BA优化
     for i in tqdm(range(len(struct_index))):
         # 获取每张图片特征点、对应的点云索引、旋转向量、平移矩阵
-        point3d_idxs = struct_index[i]
+        pt3d_inds = struct_index[i]
         key_points = key_points_for_all[i]
         r = rotations[i]
         t = motions[i]
 
         # 对该图片包含的空间点进行优化
-        for j in range(len(point3d_idxs)):
-            pt3d_idx = int(point3d_idxs[j])
+        for j in range(len(pt3d_inds)):
+            pt3d_idx = int(pt3d_inds[j])
             if pt3d_idx < 0:
                 continue
             new_point = get_3dpoints_v1(structure[pt3d_idx], key_points[j].pt, r, t, K)
@@ -496,7 +556,6 @@ def func(all_params,
 
             # 观测 - 预测
             err = img_p - est_p
-
             errs.append(err[0])
             errs.append(err[1])
 
@@ -517,24 +576,24 @@ lil_matrix:基于行连接存储的稀疏矩阵(Row-based linked list sparse mat
 '''
 
 
-def bundle_adjustment_sparsity(n_cameras, n_points, camera_inds, pt3d_inds):
+def bundle_adjustment_sparsity(n_cameras, n_points, pt2d_view_inds, pt3d_inds):
     """
+    雅可比稀疏矩阵
     :param n_cameras:  number of views
     :param n_points:   number of 3D points
-    :param camera_inds:    number: 2D-3D mapping pairs (number of 2D feature points: n_observations)
+    :param pt2d_view_inds:    number: 2D-3D mapping pairs (number of 2D feature points: n_observations)
     :param pt3d_inds:  number: 2D-3D mapping pairs
     :return:
     """
-    # TODO: 雅可比稀疏矩阵
 
-    m = camera_inds.size * 2  # rows number: n_observations(mappings) * 2(x, y)
+    m = pt2d_view_inds.size * 2  # rows number: n_observations(mappings) * 2(x, y)
     n = n_cameras * 6 + n_points * 3 + 9 + 5  # cols number:
     A = lil_matrix((m, n), dtype=int)
 
-    obs_inds = np.arange(camera_inds.size)
+    obs_inds = np.arange(pt2d_view_inds.size)
     for i in range(6):  # camera pose: rotations and translations
-        A[2 * obs_inds, camera_inds * 6 + i] = 1
-        A[2 * obs_inds + 1, camera_inds * 6 + i] = 1
+        A[2 * obs_inds, pt2d_view_inds * 6 + i] = 1
+        A[2 * obs_inds + 1, pt2d_view_inds * 6 + i] = 1
 
     for i in range(3):  # 3D points
         A[2 * obs_inds, n_cameras * 6 + pt3d_inds * 3 + i] = 1
@@ -565,7 +624,7 @@ def read_data(inds_mapping_2d_3d_per_view):
             if inds_mapping_2d_3d_per_view[view_i][pt2d_j] > -1:  # for validate 2D-3D points
                 valid_mapping_cnt += 1
 
-                camera_inds = np.append(camera_inds, view_i)
+                camera_inds = np.append(camera_inds, view_i)  # 2d feature对应的视图id
                 pt3d_inds = np.append(pt3d_inds, inds_mapping_2d_3d_per_view[view_i][pt2d_j])
 
     print('Total {:d} valid 2D-3D mappings.'.format(valid_mapping_cnt))
@@ -608,7 +667,6 @@ def BA(pts3d,
     # flatten()分配了新的内存, 但ravel()返回的是一个1维数组的视图
     # all_params = np.hstack((rot_vecs.ravel(), mot_vects.ravel(), pts3d.ravel()))  # all params need to be optimized
     all_params = np.hstack((rot_vecs.ravel(), mot_vects.ravel(), pts3d.ravel(), K.ravel(), distort_coefs.ravel()))
-
     residual_errs = func(all_params, n_cams, n_pts, inds_2d_to_3d, kpts_for_all, K, distort_coefs)
     A = bundle_adjustment_sparsity(n_cams, n_pts, camera_inds, pt3d_inds)
     res = least_squares(func,
@@ -617,7 +675,6 @@ def BA(pts3d,
                         verbose=2,
                         x_scale='jac', method='trf', loss='linear',
                         args=(n_cams, n_pts, inds_2d_to_3d, kpts_for_all, K, distort_coefs))
-
     # ----------
 
     # ---------- output

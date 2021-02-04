@@ -70,10 +70,10 @@ def Zhang():
             obj_points.append(obj_pt)
             img_points.append(corners_refine)
 
-            # 可视化角点
-            img = cv2.drawChessboardCorners(gray, chessboard_size, corners_refine, ret)
-            cv2.imshow('s', img)
-            cv2.waitKey(100)
+            # # 可视化角点
+            # img = cv2.drawChessboardCorners(gray, chessboard_size, corners_refine, ret)
+            # cv2.imshow('s', img)
+            # cv2.waitKey(100)
         else:
             print('Find corners failed!')
             exit(-1)
